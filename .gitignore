@@ -1,0 +1,19 @@
+venv/
+__pycache__/
+*.py[cod]
+
+# Local app data
+*.db
+*.sqlite
+*.sqlite3
+
+# Local deployment/config state
+.vercel/
+.env
+.env.*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
