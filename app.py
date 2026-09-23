@@ -24,6 +24,37 @@ def df_to_excel_bytes(sheets: dict) -> bytes:
     return buf.getvalue()
 
 
+def read_excel_upload(upload, kind: str) -> pd.DataFrame:
+    frame = pd.read_excel(upload)
+    headers = {
+        str(column).strip().lower().replace(" ", "_")
+        for column in frame.columns
+    }
+    has_isbm = bool(headers & {"isbm", "isbn", "isbm_number", "isbn_number", "product"})
+    has_quantity = bool(headers & {"sales_qty", "qty_sold", "grn_qty", "qty_received", "qty"})
+    if kind == "grn" and not (has_isbm and has_quantity):
+        upload.seek(0)
+        frame = pd.read_excel(
+            upload,
+            header=None,
+            names=[
+                "row_number", "product", "description", "unnamed_3", "unnamed_4",
+                "qty", "price", "gross_amount", "discount_percent", "discount_amount",
+                "total_discount", "amount", "sih", "ordered_qty", "due_qty",
+            ],
+            usecols=list(range(15)),
+        )
+    elif kind == "sales" and not (has_isbm and has_quantity):
+        upload.seek(0)
+        frame = pd.read_excel(
+            upload,
+            header=None,
+            names=["isbm", "book_name", "sales_qty"],
+            usecols=[0, 1, 2],
+        )
+    return frame
+
+
 st.title("📦 GRN / Sales Mapping System")
 
 st.info(
@@ -33,7 +64,7 @@ st.info(
 
 with st.sidebar:
     st.header("Data")
-    st.caption("Clear uploaded GRN/Sales rows. Identity master records are kept.")
+    st.caption("Clear the current uploaded GRN and Sales rows.")
     if st.button("Clear current uploaded data"):
         db.clear_current_upload_data()
         st.success("Current uploaded GRN/Sales data cleared.")
@@ -42,9 +73,8 @@ with st.sidebar:
 tabs = st.tabs([
     "⬆️ Upload GRN",
     "⬆️ Upload Sales",
-    "🪪 Identity Master",
-    "📄 GRN-wise Report",
-    "📚 ISBM-wise Report",
+    "📄 GRN Mapping Report",
+    "📚 Sales Mapping Report",
     "📊 Summary",
 ])
 
@@ -59,16 +89,15 @@ with tabs[0]:
     up = st.file_uploader("GRN Excel file", type=["xlsx", "xls"], key="grn_upload")
     if up is not None:
         try:
-            raw = pd.read_excel(up)
-            st.dataframe(raw.head(20), width="stretch")
+            raw = read_excel_upload(up, "grn")
+            st.caption(f"Loaded {len(raw):,} data row(s).")
+            st.dataframe(raw.astype("string"), width="stretch", height=600)
             if st.button("Replace GRN data with these rows", type="primary"):
                 result = db.insert_grn_lines(raw, batch_name=up.name)
                 st.success(f"Replaced current GRN data with {result['inserted']} line(s).")
                 if result["missing_identity"]:
                     st.warning(
-                        "These ISBMs aren't in the Identity master yet — add "
-                        "them on the Identity Master tab so future reports "
-                        "show a proper Book Name: "
+                        "These ISBMs have no book name in the uploaded data: "
                         + ", ".join(result["missing_identity"])
                     )
         except Exception as e:
@@ -84,80 +113,54 @@ with tabs[1]:
     up2 = st.file_uploader("Sales Excel file", type=["xlsx", "xls"], key="sales_upload")
     if up2 is not None:
         try:
-            raw = pd.read_excel(up2)
-            st.dataframe(raw.head(20), width="stretch")
+            raw = read_excel_upload(up2, "sales")
+            st.caption(f"Loaded {len(raw):,} data row(s).")
+            st.dataframe(raw.astype("string"), width="stretch", height=600)
             if st.button("Replace Sales data with these rows", type="primary", key="import_sales"):
                 result = db.insert_sales_lines(raw, batch_name=up2.name)
                 st.success(f"Replaced current Sales data with {result['inserted']} line(s).")
                 if result["missing_identity"]:
                     st.warning(
-                        "These ISBMs aren't in the Identity master yet: "
+                        "These ISBMs have no book name in the uploaded data: "
                         + ", ".join(result["missing_identity"])
                     )
         except Exception as e:
             st.error(f"Couldn't read/import this file: {e}")
 
-# ------------------------------------------------------------- Identity Master
-with tabs[2]:
-    st.subheader("Identity master (ISBM → Book Name)")
-    st.caption(
-        "This is the single source of truth for book titles. Upload a file "
-        "with ISBM + Book Name columns to bulk-add/update, or edit the table "
-        "below directly."
-    )
-    up3 = st.file_uploader("Bulk upload (ISBM, Book Name)", type=["xlsx", "xls"], key="identity_upload")
-    if up3 is not None:
-        try:
-            raw = pd.read_excel(up3)
-            if st.button("Import into Identity master", type="primary"):
-                n = db.upsert_identity(raw)
-                st.success(f"Added/updated {n} identity record(s).")
-        except Exception as e:
-            st.error(f"Couldn't read/import this file: {e}")
-
-    st.divider()
-    st.markdown("**Current Identity master**")
-    st.dataframe(db.get_identity_df(), width="stretch", height=350)
-
-    st.markdown("**GRN master (GRN No → Date, Supplier)**")
-    st.dataframe(db.get_grn_master_df(), width="stretch", height=250)
-
-# ------------------------------------------------------------- GRN-wise Report
+# ---------------------------------------------------------- Mapping reports
 grn_lines = db.get_grn_lines_df()
 sales_lines = db.get_sales_lines_df()
 grn_wise = engine.compute_grn_wise_report(grn_lines, sales_lines)
+sales_wise = engine.compute_sales_mapping_report(grn_lines, sales_lines)
 
-with tabs[3]:
-    st.subheader("GRN-wise Report")
-    st.caption("Every GRN batch, how much of it has been sold (FIFO, oldest batch first), and what's left.")
+with tabs[2]:
+    st.subheader("GRN Mapping Report")
+    st.caption("GRN stock mapped to sales using FIFO, including SIH quantities.")
     if grn_wise.empty:
         st.info("No GRN data uploaded yet.")
     else:
         st.dataframe(grn_wise, width="stretch", height=450)
         st.download_button(
             "⬇️ Download as Excel",
-            df_to_excel_bytes({"GRN_Wise_Report": grn_wise}),
-            file_name=f"GRN_Wise_Report_{datetime.now():%Y%m%d}.xlsx",
+            df_to_excel_bytes({"GRN Mapping Report": grn_wise}),
+            file_name=f"GRN_Mapping_Report_{datetime.now():%Y%m%d}.xlsx",
         )
 
-# ------------------------------------------------------------ ISBM-wise Report
-isbm_wise = engine.compute_isbm_wise_report(grn_lines, sales_lines, grn_wise)
-
-with tabs[4]:
-    st.subheader("ISBM-wise Report")
-    st.caption("Total inventory movement per title, across all its GRN batches.")
-    if isbm_wise.empty:
+with tabs[3]:
+    st.subheader("Sales Mapping Report")
+    st.caption("Each sales row matched to available GRN stock, with unmapped quantities shown.")
+    if sales_wise.empty:
         st.info("No data uploaded yet.")
     else:
-        st.dataframe(isbm_wise, width="stretch", height=450)
+        st.dataframe(sales_wise, width="stretch", height=450)
         st.download_button(
             "⬇️ Download as Excel",
-            df_to_excel_bytes({"ISBM_Wise_Report": isbm_wise}),
-            file_name=f"ISBM_Wise_Report_{datetime.now():%Y%m%d}.xlsx",
+            df_to_excel_bytes({"Sales Mapping Report": sales_wise}),
+            file_name=f"Sales_Mapping_Report_{datetime.now():%Y%m%d}.xlsx",
         )
 
 # ----------------------------------------------------------------------- Summary
-with tabs[5]:
+with tabs[4]:
     st.subheader("Summary")
     summary = engine.compute_summary(grn_lines, sales_lines, grn_wise)
     cols = st.columns(3)
@@ -166,14 +169,21 @@ with tabs[5]:
             st.metric(label, f"{value:,.1f}" if isinstance(value, float) else value)
 
     st.divider()
-    if st.button("⬇️ Export all three reports as one Excel file"):
+    if st.button("⬇️ Export complete mapping workbook"):
         data = df_to_excel_bytes({
-            "Summary": pd.DataFrame(list(summary.items()), columns=["Metric", "Value"]),
-            "GRN_Wise_Report": grn_wise,
-            "ISBM_Wise_Report": isbm_wise,
+            "Summary": pd.DataFrame(list(summary.items()), columns=["Metric", "Quantity"]),
+            "GRN Mapping Report": grn_wise,
+            "Sales Mapping Report": sales_wise,
+            "Original GRN": grn_lines.rename(columns={
+                "grn_no": "GRN Number", "isbm": "ISBM", "book_name": "Book Name",
+                "qty_received": "GRN Qty", "sih_qty": "SIH Qty",
+            }),
+            "Original Sales": sales_lines.rename(columns={
+                "isbm": "ISBM", "book_name": "Book Name", "qty_sold": "Sales Qty",
+            }),
         })
         st.download_button(
             "Click to download",
             data,
-            file_name=f"GRN_Sales_Reports_{datetime.now():%Y%m%d}.xlsx",
+            file_name=f"Full_GRN_Mapping_and_Sales_Mapping_Report_{datetime.now():%Y%m%d}.xlsx",
         )

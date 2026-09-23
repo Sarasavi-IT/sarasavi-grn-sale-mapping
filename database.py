@@ -17,6 +17,7 @@ as reusable reference data for book names.
 """
 
 import sqlite3
+import re
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +51,7 @@ def init_db():
             grn_no TEXT NOT NULL,
             isbm TEXT NOT NULL,
             qty_received REAL NOT NULL,
+            sih_qty REAL NOT NULL DEFAULT 0,
             upload_batch TEXT,
             uploaded_at TEXT
         );
@@ -63,6 +65,9 @@ def init_db():
         );
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(grn_lines)")}
+    if "sih_qty" not in columns:
+        conn.execute("ALTER TABLE grn_lines ADD COLUMN sih_qty REAL NOT NULL DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -70,7 +75,10 @@ def init_db():
 def _norm_cols(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize column headers: strip whitespace, lowercase, underscores."""
     df = df.copy()
-    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+    df.columns = [
+        re.sub(r"[^a-z0-9]+", "_", str(c).strip().lower()).strip("_")
+        for c in df.columns
+    ]
     return df
 
 
@@ -195,11 +203,17 @@ def insert_grn_lines(df: pd.DataFrame, batch_name: str, replace_existing: bool =
     """
     df = _norm_cols(df)
     grn_col = _find_col(df, "grn_no", "grn_number")
-    isbm_col = _find_col(df, "isbm", "isbn", "isbm_number")
+    isbm_col = _find_col(df, "isbm", "isbn", "isbm_number", "product")
     qty_col = _find_col(df, "grn_qty", "qty_received", "qty")
-    if not (grn_col and isbm_col and qty_col):
+    sih_col = _find_col(df, "sih", "sih_qty", "stock_in_hand")
+    inferred_grn_no = None
+    if not grn_col:
+        match = re.match(r"(\d+)", Path(batch_name).stem)
+        inferred_grn_no = match.group(1) if match else None
+    if not (isbm_col and qty_col and (grn_col or inferred_grn_no)):
         raise ValueError(
-            "GRN file needs at minimum: GRN No, ISBM, GRN Qty columns."
+            "GRN file needs ISBM/Product, quantity, and either a GRN No column "
+            "or a filename starting with the GRN number."
         )
 
     if replace_existing:
@@ -216,17 +230,19 @@ def insert_grn_lines(df: pd.DataFrame, batch_name: str, replace_existing: bool =
     now = datetime.now().isoformat(timespec="seconds")
     inserted, missing_identity = 0, set()
     for _, r in df.iterrows():
-        grn_no = str(r[grn_col]).strip()
+        grn_no = str(r[grn_col]).strip() if grn_col else inferred_grn_no
         isbm = str(r[isbm_col]).strip()
         qty = r[qty_col]
+        sih = r[sih_col] if sih_col and pd.notna(r[sih_col]) else 0
         if not grn_no or not isbm or pd.isna(qty):
             continue
         if lookup_book_name(isbm).startswith("UNKNOWN"):
             missing_identity.add(isbm)
         conn.execute(
-            """INSERT INTO grn_lines (grn_no, isbm, qty_received, upload_batch, uploaded_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (grn_no, isbm, float(qty), batch_name, now),
+                """INSERT INTO grn_lines
+                    (grn_no, isbm, qty_received, sih_qty, upload_batch, uploaded_at)
+                    VALUES (?, ?, ?, ?, ?, ?)""",
+                (grn_no, isbm, float(qty), float(sih), batch_name, now),
         )
         inserted += 1
     conn.commit()
@@ -289,8 +305,8 @@ def get_grn_master_df() -> pd.DataFrame:
 def get_grn_lines_df() -> pd.DataFrame:
     conn = get_conn()
     query = """
-        SELECT gl.grn_no, gm.grn_date, gm.supplier, gl.isbm,
-               im.book_name, gl.qty_received
+         SELECT gl.grn_no, gm.grn_date, gm.supplier, gl.isbm,
+             im.book_name, gl.qty_received, gl.sih_qty
         FROM grn_lines gl
         LEFT JOIN grn_master gm ON gl.grn_no = gm.grn_no
         LEFT JOIN identity_master im ON gl.isbm = im.isbm

@@ -27,16 +27,22 @@ own machine — no data leaves your computer. The app stores only the current
 GRN/Sales upload in `grn_system.db`; importing a new GRN or Sales file replaces
 the previous upload for that input type.
 
+Legacy `.xls` files are supported. The supplied `182844_grn.xls` format uses
+`Product`, `Description`, and `Qty.`; the GRN number is read from the numeric
+prefix in the filename. The supplied `21-08-15-09sales.xls` format is read as
+headerless `ISBM`, `Book Name`, and `Sales Qty` columns. Both files may be
+uploaded with their headings removed; the complete uploaded data is shown
+before import.
+
 ## 3. How the tabs work
 
 | Tab | What you do |
 |---|---|
-| **Upload GRN** | Upload an Excel file with at least `GRN No, ISBM, GRN Qty`. If it also has `GRN Date`/`Supplier`/`Book Name`, those get saved to the master lists automatically. |
-| **Upload Sales** | Upload an Excel file with `ISBM, Sales Qty`. Book Name is looked up automatically — you don't need to include it. |
-| **Identity Master** | The master list of ISBM → Book Name, and GRN No → Date/Supplier. Bulk-upload once to seed it, or just let it fill in as you upload GRN/Sales files. Any ISBM missing from here shows as "UNKNOWN" in reports until you add it. |
-| **GRN-wise Report** | Every GRN batch, how much of it is sold (oldest batch first), and what's left. Downloadable as Excel. |
-| **ISBM-wise Report** | Same data rolled up per title across all its batches. Downloadable as Excel. |
-| **Summary** | Headline totals and sell-through rate. One button exports all three reports into a single Excel workbook. |
+| **Upload GRN** | Upload a GRN Excel file. The supplied data-only format uses Product/ISBM, Description/Book Name, Qty., and SIH. |
+| **Upload Sales** | Upload a sales Excel file. The supplied data-only format uses ISBM, Book Name, and Sales Qty. |
+| **GRN Mapping Report** | GRN stock mapped to sales using FIFO, including SIH quantities. Downloadable as Excel. |
+| **Sales Mapping Report** | Each sales row mapped to available GRN stock, including unmapped quantities. Downloadable as Excel. |
+| **Summary** | GRN, SIH, available stock, sales, mapped sales, and unmapped sales totals. Export the complete five-sheet workbook. |
 
 ## 4. Migrating your existing spreadsheet data (one-time)
 
